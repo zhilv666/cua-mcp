@@ -31,6 +31,42 @@ func DefaultAllowlistPath() string {
 	return filepath.Join(codexHome, "computer-use", "config.toml")
 }
 
+// AllowlistPathEnv 是覆盖白名单位置的环境变量名。
+const AllowlistPathEnv = "CUA_ALLOWLIST"
+
+// ResolveAllowlistPath 统一解析白名单路径，优先级：
+//
+//	显式传入（命令行 --allowlist） > 环境变量 CUA_ALLOWLIST > Codex 默认位置
+//
+// 服务器与 approvals/approve/revoke 子命令都走这一个函数。
+// 早先两边各解析各的 —— 命令行参数只影响服务器，环境变量只影响子命令 ——
+// 于是设了 CUA_ALLOWLIST 的人会看到子命令写一个文件、服务器读另一个。
+func ResolveAllowlistPath(explicit string) string {
+	if p := strings.TrimSpace(explicit); p != "" {
+		return expandHome(p)
+	}
+	if p := strings.TrimSpace(os.Getenv(AllowlistPathEnv)); p != "" {
+		return expandHome(p)
+	}
+	return DefaultAllowlistPath()
+}
+
+// expandHome 把开头的 ~ 展开成用户主目录。
+// 命令行传路径时 ~ 不会被 shell 展开（如来自配置文件），故这里兜一层。
+func expandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, `~\`) {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
+}
+
 var (
 	// 段内的 allowed = [ ... ]
 	reAllowedList = regexp.MustCompile(`(?s)allowed\s*=\s*\[(.*?)\]`)

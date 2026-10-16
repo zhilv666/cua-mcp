@@ -49,7 +49,12 @@ func run() error {
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
 		switch os.Args[1] {
 		case "approvals", "approve", "revoke":
-			return runAllowlistCmd(os.Args[1], os.Args[2:])
+			// 子命令也接受 --allowlist，与服务器走同一套解析。
+			path, rest, err := parseAllowlistFlag(os.Args[2:])
+			if err != nil {
+				return err
+			}
+			return runAllowlistCmd(os.Args[1], rest, path)
 		case "cursor":
 			return runCursorCmd(os.Args[2:])
 		case "help":
@@ -86,10 +91,7 @@ func run() error {
 		exe = h.Exe
 	}
 
-	allowlistPath := *listPath
-	if allowlistPath == "" {
-		allowlistPath = sky.DefaultAllowlistPath()
-	}
+	allowlistPath := sky.ResolveAllowlistPath(*listPath)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -208,11 +210,31 @@ func logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "[cua] "+format+"\n", args...)
 }
 
-func runAllowlistCmd(cmd string, args []string) error {
-	path := sky.DefaultAllowlistPath()
-	if p := os.Getenv("CUA_ALLOWLIST"); p != "" {
-		path = p
+// parseAllowlistFlag 从子命令参数里摘出 --allowlist。
+//
+// 子命令不用 flag 包（位置参数更自然），所以这里手写：
+// 识别 --allowlist <path> 与 --allowlist=<path>，其余原样返回。
+func parseAllowlistFlag(args []string) (path string, rest []string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--allowlist":
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("--allowlist 后面需要一个路径")
+			}
+			path = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--allowlist="):
+			path = strings.TrimPrefix(a, "--allowlist=")
+		default:
+			rest = append(rest, a)
+		}
 	}
+	return path, rest, nil
+}
+
+func runAllowlistCmd(cmd string, args []string, explicitPath string) error {
+	path := sky.ResolveAllowlistPath(explicitPath)
 
 	switch cmd {
 	case "approvals":
@@ -317,12 +339,16 @@ func usage() {
 选项：
   --auto              跳过审批询问，全部放行（有风险）
   --helper <path>     指定 codex-computer-use.exe
-  --allowlist <path>  指定审批白名单文件
+  --allowlist <path>  指定审批白名单文件（服务器与子命令通用）
   --version           显示版本
 
 环境变量：
   CUA_HELPER_PATH     直接指定 helper exe
   CUA_NODE_RUNTIME    指定 cua_node 运行时目录
+  CUA_ALLOWLIST       覆盖白名单文件位置（低于 --allowlist）
   CODEX_HOME          影响白名单的默认位置
+
+白名单优先级：--allowlist > CUA_ALLOWLIST > $CODEX_HOME/computer-use/config.toml
+路径支持 ~ 开头。
 `)
 }
