@@ -2,9 +2,12 @@
 #
 # 触发：推送形如 v1.2.3 的 tag。
 #
+# 发布说明由 git log 按提交类型自动归类生成（Features / Fixes /
+# Documentation / Maintenance / Other），不再手写。
+#
 # 关于平台支持：二进制六个平台都能编出来，但**引擎只有 Windows**
 # （codex-computer-use.exe 仅随 Codex 桌面版分发）。mac/Linux 的产物
-# 能跑、CLI 也能用，但没有可驱动的引擎。各归档里附了说明。
+# 能跑、CLI 也能用，但没有可驱动的引擎。各归档里附了 README 说明。
 name: release
 
 on:
@@ -16,7 +19,8 @@ permissions:
   contents: write # 创建 Release 需要
 
 jobs:
-  release:
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,102 +30,176 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # 提交前先跑测试，避免把坏掉的 tag 发出去
+      # 先跑测试，避免把坏掉的 tag 发出去
       - name: 测试
         run: go test ./...
 
-      - name: 交叉编译
+  build:
+    name: Package (${{ matrix.goos }}-${{ matrix.goarch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, darwin, linux]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 交叉编译并打包
+        shell: bash
         env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          mkdir -p dist
+          base="cua-mcp_${VERSION}_${GOOS}_${GOARCH}"
+          outdir="dist/${base}"
+          mkdir -p "$outdir"
+
+          binname="cua-mcp"
+          if [ "$GOOS" = "windows" ]; then binname="cua-mcp.exe"; fi
+
           # 版本号注入二进制，避免 --version 里写死
-          ldflags="-s -w -X main.version=${VERSION}"
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "${outdir}/${binname}" ./cmd/cua-mcp
 
-          for target in \
-            windows/amd64 windows/arm64 \
-            darwin/amd64 darwin/arm64 \
-            linux/amd64 linux/arm64
-          do
-            goos="${target%/*}"
-            goarch="${target#*/}"
+          # 附上说明：引擎仅 Windows 有
+          cp README.md LICENSE "$outdir/"
 
-            outdir="dist/cua-mcp_${VERSION}_${goos}_${goarch}"
-            mkdir -p "$outdir"
+          # 打包：Windows 用 zip（用户习惯），其余用 tar.gz。
+          if [ "$GOOS" = "windows" ]; then
+            (cd dist && zip -qr "${base}.zip" "$base")
+          else
+            tar -C dist -czf "${outdir}.tar.gz" "$base"
+          fi
+          rm -rf "$outdir"
 
-            # Windows 需要 .exe 后缀
-            binname="cua-mcp"
-            if [ "$goos" = "windows" ]; then binname="cua-mcp.exe"; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
 
-            echo "→ ${goos}/${goarch}"
-            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-              go build -trimpath -ldflags "$ldflags" -o "${outdir}/${binname}" ./cmd/cua-mcp
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 生成变更日志需要完整历史与标签
 
-            # 附上说明：引擎仅 Windows 有
-            cp README.md LICENSE "$outdir/"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
-            # 打包：Windows 用 zip（用户习惯），其余用 tar.gz。
-            # zip 在 ubuntu-latest 上自带，但仍加个兜底，免得环境变动时整条流水线断掉。
-            base="${outdir##*/}"
-            if [ "$goos" = "windows" ] && command -v zip >/dev/null 2>&1; then
-              (cd dist && zip -qr "${base}.zip" "$base")
-              rm -rf "$outdir"
-            else
-              tar -C dist -czf "${outdir}.tar.gz" "$base"
-              rm -rf "$outdir"
-            fi
-          done
-
+      - name: 生成校验和
+        shell: bash
+        run: |
+          cd dist
           # 用 find 而不是 glob：某个后缀恰好没产出时，glob 会把字面量
           # 传给 sha256sum 导致整条命令失败、checksums.txt 生不出来。
-          find dist -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) \
+          find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) \
             -printf '%f\n' | sort | while read -r f; do
-            (cd dist && sha256sum "$f")
-          done > dist/checksums.txt
-          cat dist/checksums.txt
-          ls -la dist/
+            sha256sum "$f"
+          done > checksums.txt
+          cat checksums.txt
 
-      - name: 创建 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/checksums.txt
-          generate_release_notes: true
-          body: |
-            ## cua-mcp ${{ github.ref_name }}
+      - name: 从 git log 生成发布说明
+        shell: bash
+        run: |
+          # 找到上一个 tag（按提交历史，取当前 tag 之前最近的一个）
+          PREV_TAG="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
 
-            独立的 Computer Use MCP 服务器 —— 把 Codex App 的电脑操作能力抽出来，
-            不需要一直开着 App。
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..${GITHUB_REF_NAME}"
+          else
+            # 没有上一个 tag（首个 release）时，列出全部历史
+            RANGE="${GITHUB_REF_NAME}"
+          fi
 
-            支持 stdio / Streamable HTTP / SSE 三种传输。
+          # 取区间内的提交，格式：短哈希<TAB>标题，排除 merge 提交
+          git log --no-merges --pretty=format:'%h%x09%s' "${RANGE}" > commits.txt
 
-            ### ⚠️ 平台说明
+          # 剩余未归类的提交，逐类剔除后剩下的进入 Other
+          cp commits.txt remaining.txt
 
-            六个平台的二进制都能编出来，但**引擎只有 Windows**：
+          # 按类型输出一个分组：$1=标题 $2=类型匹配正则
+          # 提交标题形如 "🐛 fix(scope): xxx"，类型前可能有 emoji+空格，
+          # 因此用 [[:space:]] 匹配 TAB 或 emoji 后的空格，类型后须紧跟 ( : 或 !
+          emit_category() {
+            local title="$1" pattern="$2" re matched
+            re="[[:space:]](${pattern})[(:!]"
+            matched="$(grep -E "${re}" remaining.txt || true)"
+            if [ -n "${matched}" ]; then
+              echo "### ${title}"
+              echo ""
+              printf '%s\n' "${matched}" | while IFS="$(printf '\t')" read -r hash subject; do
+                echo "- ${subject} (${hash})"
+              done
+              echo ""
+              # 从剩余集合中剔除已归类的行
+              grep -vE "${re}" remaining.txt > remaining.tmp || true
+              mv remaining.tmp remaining.txt
+            fi
+          }
 
-            | 平台 | 二进制可用 | 引擎可用 |
-            |---|---|---|
-            | Windows | ✅ | ✅ |
-            | macOS / Linux | ✅ | ❌ |
+          # 生成分组正文
+          {
+            emit_category "Features"      "feat|feature"
+            emit_category "Fixes"         "fix|bugfix|hotfix"
+            emit_category "Documentation" "docs"
+            emit_category "Maintenance"   "chore|ci|build|refactor|test|perf|style|deps"
 
-            引擎是 `codex-computer-use.exe`，**仅随 Codex 桌面版分发**，没有独立的
-            下载地址（`@oai/sky` 在 npm 上是私有包）。mac/Linux 上本程序能启动、
-            CLI 也能用，但没有可驱动的引擎。
+            # Other：以上都没匹配到的提交
+            if [ -s remaining.txt ]; then
+              echo "### Other"
+              echo ""
+              while IFS="$(printf '\t')" read -r hash subject; do
+                [ -n "${hash}" ] && echo "- ${subject} (${hash})"
+              done < remaining.txt
+              echo ""
+            fi
+          } > notes-body.md
 
-            ### 用法
+          # Full Changelog 链接
+          if [ -n "${PREV_TAG}" ]; then
+            COMPARE="https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${GITHUB_REF_NAME}"
+          else
+            COMPARE="https://github.com/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}"
+          fi
 
-            1. 确认已装 Codex 桌面版（引擎在
-               `%LOCALAPPDATA%\OpenAI\Codex\runtimes\cua_node\<hash>\`）
-            2. 解压后接到 MCP 客户端：
+          # Release 正文（标题已是 tag，正文不重复版本号）
+          {
+            echo "## What's Changed"
+            echo ""
+            cat notes-body.md
+            echo "**Full Changelog**: ${COMPARE}"
+          } > release-notes.md
 
-            ```bash
-            claude mcp add cua-mcp --scope user -- "<解压路径>/cua-mcp.exe"
-            ```
+          echo "----- release notes -----"
+          cat release-notes.md
 
-            引擎位置找不到时用 `CUA_HELPER_PATH` 指定；白名单位置用
-            `--allowlist` 或 `CUA_ALLOWLIST` 覆盖。
-
-            详见 README。
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          if ! gh release view "${GITHUB_REF_NAME}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --repo "${GH_REPO}" \
+              --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
+          else
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GH_REPO}" \
+              --notes-file release-notes.md
+          fi
+          gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GH_REPO}" --clobber
