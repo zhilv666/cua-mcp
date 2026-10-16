@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -36,6 +37,22 @@ import (
 	"github.com/zhilv666/cua-mcp/internal/mcpserver"
 	"github.com/zhilv666/cua-mcp/internal/sky"
 )
+
+// version 由构建时的 -ldflags "-X main.version=..." 注入。
+//
+// 留空时回落到 go.mod 里记录的模块版本（go install 场景能拿到），
+// 再不行就显示 dev —— 这样「--version 永远报 1.0.0」的假象不会出现。
+var version = ""
+
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -77,7 +94,7 @@ func run() error {
 		return err
 	}
 	if *showVer {
-		fmt.Println("cua-mcp 1.0.0")
+		fmt.Printf("cua-mcp %s\n", buildVersion())
 		return nil
 	}
 

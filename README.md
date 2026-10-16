@@ -6,9 +6,26 @@
 Go 写的单文件二进制，支持 **stdio / Streamable HTTP / SSE** 三种传输，
 可交叉编译到 Windows / macOS / Linux。
 
+---
+
+## 安装
+
+**下载预编译二进制**：从 [Releases](../../releases) 取对应平台的归档。
+推送 `v*` tag 会自动触发 CI 交叉编译六平台并创建 Release。
+
+**从源码构建**：
+
 ```bash
 go build -o bin/cua-mcp.exe ./cmd/cua-mcp
+# 或
+go install github.com/zhilv666/cua-mcp/cmd/cua-mcp@latest
 ```
+
+> ⚠️ **前置条件**：引擎（`codex-computer-use.exe`）**仅随 Codex 桌面版分发**，
+> 没有独立的下载地址。用之前得先装 Codex —— 程序会自动在
+> `%LOCALAPPDATA%\OpenAI\Codex
+untimes\` 下查找，找不到时用
+> `CUA_HELPER_PATH` 手动指定。
 
 ---
 

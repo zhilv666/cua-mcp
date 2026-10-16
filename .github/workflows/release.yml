@@ -1,0 +1,127 @@
+# 打 tag 时交叉编译六个平台并创建 GitHub Release。
+#
+# 触发：推送形如 v1.2.3 的 tag。
+#
+# 关于平台支持：二进制六个平台都能编出来，但**引擎只有 Windows**
+# （codex-computer-use.exe 仅随 Codex 桌面版分发）。mac/Linux 的产物
+# 能跑、CLI 也能用，但没有可驱动的引擎。各归档里附了说明。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # 创建 Release 需要
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 提交前先跑测试，避免把坏掉的 tag 发出去
+      - name: 测试
+        run: go test ./...
+
+      - name: 交叉编译
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # 版本号注入二进制，避免 --version 里写死
+          ldflags="-s -w -X main.version=${VERSION}"
+
+          for target in \
+            windows/amd64 windows/arm64 \
+            darwin/amd64 darwin/arm64 \
+            linux/amd64 linux/arm64
+          do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+
+            outdir="dist/cua-mcp_${VERSION}_${goos}_${goarch}"
+            mkdir -p "$outdir"
+
+            # Windows 需要 .exe 后缀
+            binname="cua-mcp"
+            if [ "$goos" = "windows" ]; then binname="cua-mcp.exe"; fi
+
+            echo "→ ${goos}/${goarch}"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$ldflags" -o "${outdir}/${binname}" ./cmd/cua-mcp
+
+            # 附上说明：引擎仅 Windows 有
+            cp README.md LICENSE "$outdir/"
+
+            # 打包：Windows 用 zip（用户习惯），其余用 tar.gz。
+            # zip 在 ubuntu-latest 上自带，但仍加个兜底，免得环境变动时整条流水线断掉。
+            base="${outdir##*/}"
+            if [ "$goos" = "windows" ] && command -v zip >/dev/null 2>&1; then
+              (cd dist && zip -qr "${base}.zip" "$base")
+              rm -rf "$outdir"
+            else
+              tar -C dist -czf "${outdir}.tar.gz" "$base"
+              rm -rf "$outdir"
+            fi
+          done
+
+          # 用 find 而不是 glob：某个后缀恰好没产出时，glob 会把字面量
+          # 传给 sha256sum 导致整条命令失败、checksums.txt 生不出来。
+          find dist -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' \) \
+            -printf '%f\n' | sort | while read -r f; do
+            (cd dist && sha256sum "$f")
+          done > dist/checksums.txt
+          cat dist/checksums.txt
+          ls -la dist/
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true
+          body: |
+            ## cua-mcp ${{ github.ref_name }}
+
+            独立的 Computer Use MCP 服务器 —— 把 Codex App 的电脑操作能力抽出来，
+            不需要一直开着 App。
+
+            支持 stdio / Streamable HTTP / SSE 三种传输。
+
+            ### ⚠️ 平台说明
+
+            六个平台的二进制都能编出来，但**引擎只有 Windows**：
+
+            | 平台 | 二进制可用 | 引擎可用 |
+            |---|---|---|
+            | Windows | ✅ | ✅ |
+            | macOS / Linux | ✅ | ❌ |
+
+            引擎是 `codex-computer-use.exe`，**仅随 Codex 桌面版分发**，没有独立的
+            下载地址（`@oai/sky` 在 npm 上是私有包）。mac/Linux 上本程序能启动、
+            CLI 也能用，但没有可驱动的引擎。
+
+            ### 用法
+
+            1. 确认已装 Codex 桌面版（引擎在
+               `%LOCALAPPDATA%\OpenAI\Codex\runtimes\cua_node\<hash>\`）
+            2. 解压后接到 MCP 客户端：
+
+            ```bash
+            claude mcp add cua-mcp --scope user -- "<解压路径>/cua-mcp.exe"
+            ```
+
+            引擎位置找不到时用 `CUA_HELPER_PATH` 指定；白名单位置用
+            `--allowlist` 或 `CUA_ALLOWLIST` 覆盖。
+
+            详见 README。
