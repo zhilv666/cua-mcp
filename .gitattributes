@@ -1,0 +1,15 @@
+# 统一行尾为 LF。
+#
+# 否则在 Windows（core.autocrlf=true）上，git 检出时会把 LF 转成 CRLF，
+# 于是 gofmt 认为文件未格式化、`task check` 和 pre-commit 钩子一直失败 ——
+# 而仓库里存的内容其实是干净的。这是个纯粹的环境噪音。
+#
+# 显式声明后，工作区与仓库都用 LF，gofmt 与 git 的判断就一致了。
+* text=auto eol=lf
+
+# 二进制文件不要动
+*.exe   binary
+*.jpg   binary
+*.png   binary
+*.zip   binary
+*.gz    binary
