@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -39,11 +40,18 @@ import (
 	"github.com/zhilv666/cua-mcp/internal/sky"
 )
 
-// version 由构建时的 -ldflags "-X main.version=..." 注入。
+// 构建信息，由 -ldflags "-X main.xxx=..." 注入。
 //
-// 留空时回落到 go.mod 里记录的模块版本（go install 场景能拿到），
-// 再不行就显示 dev —— 这样「--version 永远报 1.0.0」的假象不会出现。
-var version = ""
+// 全部留空时回落到运行时能拿到的信息（go install 场景，
+// 或直接 go build 出来的二进制）—— 这样「--version 永远是同一个值」的
+// 假象不会出现。
+var (
+	version   = "" // 版本号，如 v1.2.3
+	commit    = "" // 短 commit hash
+	buildTime = "" // 构建时间，RFC3339
+	buildOS   = "" // 目标平台
+	buildArch = "" // 目标架构
+)
 
 func buildVersion() string {
 	if version != "" {
@@ -53,6 +61,123 @@ func buildVersion() string {
 		return bi.Main.Version
 	}
 	return "dev"
+}
+
+// version 各字段的取值，缺失的字段回落到运行时信息或省略。
+type versionInfo struct {
+	Name    string // 程序名
+	Version string // 版本号
+	Commit  string // 短 commit
+	OS      string // 目标平台
+	Arch    string // 目标架构
+	Time    string // 构建时间
+}
+
+func collectVersion() versionInfo {
+	v := versionInfo{
+		Name:    "cua-mcp",
+		Version: buildVersion(),
+		Commit:  commit,
+		OS:      buildOS,
+		Arch:    buildArch,
+		Time:    buildTime,
+	}
+	// 平台/架构：没注入就用当前运行时的
+	if v.OS == "" {
+		v.OS = runtime.GOOS
+	}
+	if v.Arch == "" {
+		v.Arch = runtime.GOARCH
+	}
+	// commit：没注入时从构建元信息里取。
+	if v.Commit == "" {
+		v.Commit = vcsRevision()
+	}
+	return v
+}
+
+// versionText 生成人类可读的多行输出：字段名 + 值，每行一个。
+//
+// 原先挤在一行，值一多就难对位。分行的好处是报 bug 时
+// 直接整段贴出来就行，谁也不用数第几个字段是哪个。
+func versionText(v versionInfo) string {
+	const labelWidth = 10 // 按显示列宽对齐，CJK 算两列
+	rows := [][2]string{
+		{"版本", v.Version},
+		{"提交", v.Commit},
+		{"平台", v.OS},
+		{"架构", v.Arch},
+		{"构建时间", v.Time},
+	}
+	var b strings.Builder
+	for _, r := range rows {
+		if r[1] == "" {
+			continue // 取不到的字段不占行
+		}
+		pad := max(labelWidth-displayWidth(r[0]), 1)
+		b.WriteString(r[0])
+		b.WriteString(strings.Repeat(" ", pad))
+		b.WriteString(r[1])
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// displayWidth 估算字符串在终端里的显示列数。
+//
+// Go 的 fmt 按「字符数」补位，而中文一个字占两列 ——
+// 直接用 %-8s 会让 "版本" 和 "构建时间" 两行对不齐。
+// 这里把常见 CJK 区段按两列计。
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		switch {
+		case r >= 0x1100 && r <= 0x115F, // 朝鲜文字母
+			r >= 0x2E80 && r <= 0xA4CF, // CJK 部首、假名、汉字等
+			r >= 0xAC00 && r <= 0xD7A3, // 谚文音节
+			r >= 0xF900 && r <= 0xFAFF, // CJK 兼容汉字
+			r >= 0xFE30 && r <= 0xFE6F, // CJK 兼容形式
+			r >= 0xFF00 && r <= 0xFF60, // 全角形式
+			r >= 0xFFE0 && r <= 0xFFE6:
+			w += 2
+		default:
+			w++
+		}
+	}
+	return w
+}
+
+// versionJSON 生成单行 JSON，便于脚本消费。
+func versionJSON(v versionInfo) (string, error) {
+	out, err := json.Marshal(map[string]string{
+		"name":    v.Name,
+		"version": v.Version,
+		"commit":  v.Commit,
+		"os":      v.OS,
+		"arch":    v.Arch,
+		"time":    v.Time,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// vcsRevision 从构建元信息里取 commit（go build 默认会写进去）。
+func vcsRevision() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" {
+			if len(s.Value) > 12 {
+				return s.Value[:12]
+			}
+			return s.Value
+		}
+	}
+	return ""
 }
 
 func main() {
@@ -91,13 +216,32 @@ func run() error {
 		helperPath = fs.String("helper", "", "codex-computer-use.exe 路径（默认自动查找）")
 		listPath   = fs.String("allowlist", "", "审批白名单路径（默认用 Codex 的那份）")
 		showVer    = fs.Bool("version", false, "显示版本")
+		verJSON    = fs.Bool("json", false, "以 JSON 输出（配合 --version）")
 	)
+	// -v 作为 --version 的短选项。flag 包对同一变量注册两个名字即可。
+	fs.BoolVar(showVer, "v", false, "显示版本（--version 的简写）")
 	fs.Usage = usage
+
 	if err := fs.Parse(os.Args[1:]); err != nil {
+		// flag 遇到 -h / --help 会打印用法后返回 ErrHelp。
+		// 那是正常的求助行为，不是错误 —— 直接返回，别再往上抛，
+		// 否则用户会看到「错误：flag: help requested」这种莫名其妙的提示。
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if *showVer {
-		fmt.Printf("cua-mcp %s\n", buildVersion())
+		info := collectVersion()
+		if *verJSON {
+			s, err := versionJSON(info)
+			if err != nil {
+				return err
+			}
+			fmt.Println(s)
+			return nil
+		}
+		fmt.Println(versionText(info))
 		return nil
 	}
 
@@ -398,7 +542,9 @@ func usage() {
   --auto              跳过审批询问，全部放行（有风险）
   --helper <path>     指定 codex-computer-use.exe
   --allowlist <path>  指定审批白名单文件（服务器与子命令通用）
-  --version           显示版本
+  -v, --version       显示版本（含提交、平台/架构、构建时间）
+  --json              配合 --version 以 JSON 输出
+  -h, --help          显示本帮助
 
 环境变量：
   CUA_HELPER_PATH     直接指定 helper exe
