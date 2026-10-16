@@ -11,9 +11,10 @@ go build -o bin/cua-mcp.exe ./cmd/cua-mcp
 ```
 
 > ⚠️ **引擎仅 Windows 可用**，且随 Codex 桌面版分发、没有独立下载地址。
-> 详见 [平台事实](#平台事实)。
+> 详见下方「平台事实」。
 
-## 它能做什么
+<details>
+<summary>它能做什么</summary>
 
 用无障碍树读取和操作本机原生应用的界面 —— 不需要视觉模型：
 
@@ -26,7 +27,10 @@ type_text({ window, text: "..." })
 
 截图也能取（以 MCP image 块返回），但常规操作靠无障碍树就够了。
 
-## 安装
+</details>
+
+<details>
+<summary>安装</summary>
 
 **预编译二进制**：从 [Releases](../../releases) 取对应平台归档。
 推 `v*` tag 会自动触发 CI 交叉编译六平台。
@@ -52,7 +56,10 @@ command = '<路径>\cua-mcp.exe'
 
 > 名字不能叫 `computer-use`，那是 Claude Code 的保留名。
 
-## 用法
+</details>
+
+<details>
+<summary>用法</summary>
 
 ```bash
 cua-mcp                      # stdio（默认）
@@ -78,7 +85,10 @@ cua-mcp -v                   # 版本（-v / --version / --json）
 | `CUA_NODE_RUNTIME` | 指定 `cua_node` 运行时目录 |
 | `CODEX_HOME` | 影响白名单默认位置 |
 
-## 工具（14 个）
+</details>
+
+<details>
+<summary>工具（14 个）</summary>
 
 | 工具 | 说明 |
 |---|---|
@@ -95,7 +105,10 @@ cua-mcp -v                   # 版本（-v / --version / --json）
 
 典型流程：`list_windows` → `get_window_state` → `click(element_index)` → 再看状态。
 
-## 审批
+</details>
+
+<details>
+<summary>审批</summary>
 
 **白名单不另建一份**，直接读写 Codex 自己那份 —— 所以 App 批准过的 app
 这里也认，反之亦然。
@@ -125,7 +138,10 @@ cua-mcp approve zed.exe --allowlist ~/.cua/apps.toml
 cua-mcp --allowlist ~/.cua/apps.toml        # 读同一份
 ```
 
-## 平台事实
+</details>
+
+<details>
+<summary>平台事实</summary>
 
 **包装层能跨平台，引擎不能。** 这点必须说清楚，别被「跨平台」误导：
 
@@ -158,7 +174,10 @@ cua-mcp --allowlist ~/.cua/apps.toml        # 读同一份
 
 </details>
 
-## 背景
+</details>
+
+<details>
+<summary>背景</summary>
 
 Codex App 并不自己实现电脑操作。它只做两件事：
 
@@ -184,11 +203,14 @@ Codex App (ChatGPT.exe)
 ← {"id":1,"ok":true,"result":[{"app":"process:C:\\...\\Zed.exe","id":263908,"title":"cu"}...]}
 ```
 
-协议细节（含踩过的坑）见下方 [代码结构](#代码结构) 的折叠块。
+协议细节（含踩过的坑）见下方「代码结构」的折叠块。
 
 </details>
 
-## 代码结构
+</details>
+
+<details>
+<summary>代码结构</summary>
 
 ```
 cmd/cua-mcp/main.go              入口：flag 选传输
@@ -287,7 +309,10 @@ Escape 不自动重启是有意的 —— 用户按 ESC 就是要求停下，重
 
 </details>
 
-## 开发
+</details>
+
+<details>
+<summary>开发</summary>
 
 ```bash
 task              # 构建到 bin/
@@ -314,7 +339,10 @@ task release      # 跑一遍完整发布流程（等同 CI）
 
 </details>
 
-## 测试
+</details>
+
+<details>
+<summary>测试</summary>
 
 ```bash
 go test ./...     # 64 个测试函数（含子测试用例更多）
@@ -352,9 +380,14 @@ Escape 中止与崩溃自愈、光标位图判定、可选字段传 `null` 的�
 
 </details>
 
-## 许可证
+</details>
+
+<details>
+<summary>许可证</summary>
 
 [MIT](LICENSE)。
 
 本仓库**不包含**引擎 `codex-computer-use.exe` —— 那是 OpenAI 的闭源组件
 （`license: Proprietary`），随 Codex 桌面版分发。本仓库只是它的封装层。
+
+</details>
