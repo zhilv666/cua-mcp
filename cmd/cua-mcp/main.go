@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -74,6 +75,8 @@ func run() error {
 			return runAllowlistCmd(os.Args[1], rest, path)
 		case "cursor":
 			return runCursorCmd(os.Args[2:])
+		case "doctor", "where":
+			return runDoctorCmd()
 		case "help":
 			usage()
 			return nil
@@ -290,6 +293,42 @@ func runAllowlistCmd(cmd string, args []string, explicitPath string) error {
 	return fmt.Errorf("未知命令：%s", cmd)
 }
 
+// runDoctorCmd 打印引擎查找结果，便于排查「找不到引擎」。
+//
+// 自动查找涉及多个安装位置，出问题时只看一句「找不到」无从下手。
+// 这个子命令把每个候选位置都列出来。
+func runDoctorCmd() error {
+	fmt.Println("cua-mcp " + buildVersion())
+	fmt.Printf("平台：%s/%s\n\n", runtime.GOOS, runtime.GOARCH)
+
+	fmt.Println("引擎查找：")
+	for _, c := range sky.Candidates() {
+		mark := "  "
+		if c.Found {
+			mark = "✅"
+		}
+		fmt.Printf("  %s %s\n", mark, c.Path)
+		if c.Found {
+			fmt.Printf("       └─ %s\n", c.Exe)
+		}
+	}
+
+	h, err := sky.Find()
+	fmt.Println()
+	if err != nil {
+		fmt.Println("结果：❌ 未找到引擎")
+		fmt.Println()
+		fmt.Println(err.Error())
+		fmt.Println("\n可用 CUA_HELPER_PATH 直接指定该文件的路径。")
+		return nil
+	}
+	fmt.Println("结果：✅ 已找到")
+	fmt.Printf("  引擎：%s\n", h.Exe)
+	fmt.Printf("  树根：%s\n", h.Root)
+	fmt.Printf("  白名单：%s\n", sky.ResolveAllowlistPath(""))
+	return nil
+}
+
 // runCursorCmd 处理 `cua-mcp cursor ...`。
 //
 // 引擎的 cursor overlay 会接管系统光标。正常退出会还原，
@@ -352,6 +391,8 @@ func usage() {
 
   cua-mcp cursor status              检查系统光标是否正常
   cua-mcp cursor fix                 重装系统光标（光标不见了时用）
+
+  cua-mcp doctor                     显示引擎查找结果（找不到引擎时先跑这个）
 
 选项：
   --auto              跳过审批询问，全部放行（有风险）

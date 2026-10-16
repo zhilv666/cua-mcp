@@ -130,6 +130,9 @@ cua-mcp --http :8765 --sse :8766     # 同时开
 cua-mcp approvals            # 查看白名单
 cua-mcp approve <app>        # 加入白名单
 cua-mcp revoke <app>         # 移出白名单
+cua-mcp doctor               # 显示引擎查找结果（找不到引擎时先跑这个）
+cua-mcp cursor status        # 检查系统光标
+cua-mcp cursor fix           # 重装系统光标
 cua-mcp --version
 ```
 
