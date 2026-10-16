@@ -6,8 +6,6 @@
 Go 写的单文件二进制，支持 **stdio / Streamable HTTP / SSE** 三种传输，
 可交叉编译到 Windows / macOS / Linux。
 
----
-
 ## 安装
 
 **下载预编译二进制**：从 [Releases](../../releases) 取对应平台的归档。
@@ -23,9 +21,8 @@ go install github.com/zhilv666/cua-mcp/cmd/cua-mcp@latest
 
 > ⚠️ **前置条件**：引擎（`codex-computer-use.exe`）**仅随 Codex 桌面版分发**，
 > 没有独立的下载地址。用之前得先装 Codex —— 程序会自动在
-> `%LOCALAPPDATA%\OpenAI\Codex
-untimes\` 下查找，找不到时用
-> `CUA_HELPER_PATH` 手动指定。
+> `%LOCALAPPDATA%\OpenAI\Codex\runtimes\` 下查找，找不到时用
+> `CUA_HELPER_PATH` 手动指定。详见下面的「平台事实」。
 
 ---
 
@@ -133,8 +130,11 @@ cua-mcp revoke <app>         # 移出白名单
 cua-mcp doctor               # 显示引擎查找结果（找不到引擎时先跑这个）
 cua-mcp cursor status        # 检查系统光标
 cua-mcp cursor fix           # 重装系统光标
-cua-mcp --version
+cua-mcp -v                   # 版本
 ```
+
+> `doctor` 会把所有考察过的位置逐条列出并标出哪条命中 ——
+> 「找不到引擎」时不用猜程序去哪找过。
 
 ### 选项与环境变量
 
@@ -142,9 +142,18 @@ cua-mcp --version
 |---|---|
 | `--auto` | 跳过审批询问，全部放行（有风险） |
 | `--helper <path>` / `CUA_HELPER_PATH` | 指定 `codex-computer-use.exe` |
-| `--allowlist <path>` / `CUA_ALLOWLIST` | 指定白名单文件 |
+| `--allowlist <path>` / `CUA_ALLOWLIST` | 覆盖白名单文件位置 |
 | `CUA_NODE_RUNTIME` | 指定 `cua_node` 运行时目录 |
 | `CODEX_HOME` | 影响白名单默认位置 |
+
+**白名单优先级**：`--allowlist` > `CUA_ALLOWLIST` > `$CODEX_HOME/computer-use/config.toml`。
+路径支持 `~` 开头。服务器与 `approvals` / `approve` / `revoke` 子命令
+走同一套解析 —— 所以自定义路径后，两边读写的是同一个文件：
+
+```bash
+cua-mcp approve zed.exe --allowlist ~/.cua/apps.toml   # 子命令也认这个 flag
+cua-mcp --allowlist ~/.cua/apps.toml                   # 服务器读同一份
+```
 
 ---
 
@@ -281,10 +290,37 @@ cua-mcp cursor fix --force   # 状态看似正常但仍看不到时强制重装
 
 ---
 
-## 八、测试
+## 八、开发
+
+用 [go-task](https://taskfile.dev) 编排（也可直接用 `go` 命令）：
 
 ```bash
-go test ./...     # 64 项
+task              # 构建到 bin/
+task check        # 提交前检查：fmt + vet + test
+task dev          # 构建并以 stdio 起服务
+task doctor       # 显示引擎查找结果
+
+task ver          # 显示版本
+task help         # 显示程序用法
+task apps         # 列出所有已知应用
+task cross        # 本地交叉编译六平台到 dist/
+task release      # 跑一遍完整发布流程（等同 CI）
+```
+
+> `task run -- <参数>` 可以透传任意参数。但 task 会把自己的 `-h` / `-v`
+> 吃掉，所以常用的几条（`ver` / `help` / `apps` / `doctor`）给了免 `--` 的快捷方式。
+
+**Git 钩子**（[lefthook](https://lefthook.dev)，需先 `lefthook install`）：
+
+- `pre-commit` 只对改动的文件跑 gofmt / vet / build —— 快，保证提交得下去
+- `pre-push` 跑全量 `task check`
+
+临时跳过：`LEFTHOOK=0 git commit ...`
+
+## 九、测试
+
+```bash
+go test ./...     # 96 项
 go vet ./...
 ```
 
@@ -315,3 +351,13 @@ Escape 中止与崩溃自愈、光标位图判定、可选字段传 `null` 的�
 | 优雅关闭 | ✅ 先 close 握手再退出，不留光标残留 |
 | 崩溃自愈 | ✅ 杀掉引擎后下次调用自动恢复 |
 | Escape 中止 | ✅ 识别退出码 130，本轮内拒绝后续调用 |
+
+---
+
+## 许可证
+
+[MIT](LICENSE)。
+
+注意：本仓库**不包含**引擎 `codex-computer-use.exe` —— 那是 OpenAI 的闭源组件
+（`plugin.json` 标 `"license": "Proprietary"`），随 Codex 桌面版分发。
+本仓库只是它的封装层。

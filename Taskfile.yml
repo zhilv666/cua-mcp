@@ -1,0 +1,197 @@
+# 开发与构建入口。需要 go-task（https://taskfile.dev）：
+#   winget install Task.Task         # Windows
+#   brew install go-task             # macOS
+#   go install github.com/go-task/task/v3/cmd/task@latest
+#
+# 最常用的几条：
+#   task            # 默认：构建到 bin/
+#   task test       # 跑测试
+#   task check      # 构建 + vet + 测试（提交前跑这个）
+#   task dev        # 构建并直接跑起来（stdio）
+#   task doctor     # 看引擎查找结果
+#   task release    # 本地交叉编译六平台，产物在 dist/
+version: "3"
+
+vars:
+  BIN_DIR: bin
+  DIST_DIR: dist
+  PKG: ./cmd/cua-mcp
+  # Windows 上补 .exe；其他平台留空。
+  EXE: '{{if eq OS "windows"}}.exe{{end}}'
+  BIN: '{{.BIN_DIR}}/cua-mcp{{.EXE}}'
+
+  # 构建信息注入。取不到就留空，程序会自己回落到运行时信息。
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo ""
+  # 本地时区的时间戳，RFC3339
+  BUILD_TIME:
+    sh: date +%Y-%m-%dT%H:%M:%S%z
+  # 目标平台/架构（交叉编译时被覆盖）
+  TARGET_OS: '{{default OS .GOOS}}'
+  TARGET_ARCH: '{{default ARCH .GOARCH}}'
+
+  LDFLAGS: >-
+    -s -w
+    -X main.version={{.VERSION}}
+    -X main.commit={{.COMMIT}}
+    -X main.buildTime={{.BUILD_TIME}}
+    -X main.buildOS={{.TARGET_OS}}
+    -X main.buildArch={{.TARGET_ARCH}}
+
+tasks:
+  default:
+    desc: 构建到 bin/
+    cmds:
+      - task: build
+
+  build:
+    desc: 构建
+    sources:
+      - cmd/**/*.go
+      - internal/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BIN}}"
+    cmds:
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o "{{.BIN}}" {{.PKG}}
+    silent: true
+
+  run:
+    desc: '构建并运行（参数用 -- 分隔：task run -- -v）'
+    deps: [build]
+    cmds:
+      # 不给参数就别跑：cua-mcp 无参时会以 stdio 起服务并一直等输入，
+      # 看上去像卡死了。那种情况应该用 `task dev`。
+      - |
+        if [ -z "{{.CLI_ARGS}}" ]; then
+          echo "需要参数。要起 stdio 服务用 'task dev'。"
+          echo "例：task run -- -v    task run -- doctor"
+          exit 1
+        fi
+      - "{{.BIN}} {{.CLI_ARGS}}"
+
+  dev:
+    desc: 构建并以 stdio 起服务（Ctrl+C 退出）
+    deps: [build]
+    cmds:
+      - "{{.BIN}} {{.CLI_ARGS}}"
+
+  # task 会把自己的 -h/-v 吃掉，到不了我们的程序（得写成 `task run -- -v`）。
+  # 常用的几条给个免 -- 的快捷方式，省得每次都要记得加分隔符。
+  ver:
+    desc: 显示版本
+    deps: [build]
+    cmds:
+      - "{{.BIN}} -v"
+
+  help:
+    desc: 显示程序用法
+    deps: [build]
+    cmds:
+      - "{{.BIN}} -h"
+
+  apps:
+    desc: 列出所有已知应用
+    deps: [build]
+    cmds:
+      - "{{.BIN}} approvals"
+
+  test:
+    desc: 跑测试
+    cmds:
+      - go test ./...
+
+  test:v:
+    desc: 跑测试（详细）
+    cmds:
+      - go test -v ./...
+
+  cover:
+    desc: 测试覆盖率
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out | tail -1
+      - cmd: '{{if eq OS "windows"}}start{{else}}open{{end}} coverage.html'
+        ignore_error: true
+    generates:
+      - coverage.out
+
+  vet:
+    desc: 静态检查
+    cmds:
+      - go vet ./...
+
+  fmt:
+    desc: 格式化
+    cmds:
+      - gofmt -l -w cmd internal
+
+  fmt:check:
+    desc: 检查格式（不改文件）
+    cmds:
+      - |
+        out=$(gofmt -l cmd internal)
+        if [ -n "$out" ]; then
+          echo "以下文件未格式化："
+          echo "$out"
+          exit 1
+        fi
+        echo "格式检查通过"
+
+  tidy:
+    desc: 整理依赖
+    cmds:
+      - go mod tidy
+
+  check:
+    desc: 提交前检查：fmt + vet + test
+    cmds:
+      - task: fmt:check
+      - task: vet
+      - task: test
+
+  doctor:
+    desc: 显示引擎查找结果
+    deps: [build]
+    cmds:
+      - "{{.BIN}} doctor"
+
+  install:
+    desc: 装到 GOPATH/bin
+    cmds:
+      - go install -trimpath -ldflags "{{.LDFLAGS}}" {{.PKG}}
+
+  cross:
+    desc: 交叉编译六平台到 dist/
+    cmds:
+      - rm -rf {{.DIST_DIR}}
+      - |
+        for target in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+          os="${target%/*}"; arch="${target#*/}"
+          name="cua-mcp_${os}_${arch}"
+          ext=""; [ "$os" = "windows" ] && ext=".exe"
+          printf "  %-16s " "$os/$arch"
+          mkdir -p "{{.DIST_DIR}}/$name"
+          CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+            -ldflags "-s -w -X main.version={{.VERSION}} -X main.commit={{.COMMIT}} \
+                      -X main.buildTime={{.BUILD_TIME}} -X main.buildOS=$os -X main.buildArch=$arch" \
+            -o "{{.DIST_DIR}}/$name/cua-mcp$ext" {{.PKG}} \
+            && cp README.md LICENSE "{{.DIST_DIR}}/$name/" \
+            && echo OK
+        done
+    silent: true
+
+  clean:
+    desc: 清理产物
+    cmds:
+      - rm -rf {{.BIN_DIR}} {{.DIST_DIR}} coverage.out coverage.html
+
+  release:
+    desc: 本地跑一遍发布流程（等同 CI）
+    cmds:
+      - task: check
+      - task: cross
+      - 'echo "\n产物在 {{.DIST_DIR}}/；推送 v* tag 会由 CI 自动发布"'

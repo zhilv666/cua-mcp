@@ -1,0 +1,33 @@
+# Git 钩子。安装：lefthook install
+#
+# 目的：把「提交前该跑什么」固定下来，而不是靠人记得。
+# 命令都走 task，避免这里和 Taskfile 两处各写一份。
+#
+#   pre-commit  只对改动的文件做，快 —— 保证能提交得下去
+#   pre-push    跑全量检查，慢但只在推送时
+#
+# 想临时跳过：LEFTHOOK=0 git commit ...（或加 --no-verify）
+min_version: 1.10.0
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: 格式检查
+      glob: "*.go"
+      run: gofmt -l {staged_files}
+      # gofmt -l 输出未格式化的文件；有输出即失败
+      fail_text: "以上文件未格式化，跑 `task fmt` 修一下"
+    - name: 静态检查
+      glob: "*.go"
+      run: go vet ./...
+      fail_text: "go vet 发现问题"
+    - name: 构建
+      glob: "*.go"
+      run: go build ./...
+      fail_text: "构建失败"
+
+pre-push:
+  jobs:
+    - name: 全量检查
+      run: task check
+      fail_text: "task check 未通过（fmt + vet + test）"

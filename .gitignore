@@ -14,3 +14,6 @@ shots/
 # 编辑器
 .vscode/
 .idea/
+
+# go-task 的本地缓存
+.task/
