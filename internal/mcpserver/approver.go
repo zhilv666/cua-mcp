@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -142,23 +143,32 @@ func (a *Approver) ask(ctx context.Context, msg string) (string, error) {
 	return consolePrompt(ctx, msg)
 }
 
-// consolePrompt 直接打开控制台设备读取确认。
+// consolePrompt 向用户征询确认。
 //
-// MCP server 的 stdin 是 JSON-RPC 通道，绝不能用来读确认，
-// 所以这里另开 CONIN$/CONOUT$。取不到就返回 ErrNoConsole，
-// 由调用方按拒绝处理。
+// 只在 stdin 确实是终端时才提问 —— 那说明有人坐在终端前跑 CLI。
+//
+// 为什么不再尝试打开 CONIN$/CONOUT$：实测在 stdin 被重定向的场景下
+// （MCP server 被客户端拉起就是这样），这两个设备**能打开**，
+// 但往 CONOUT$ 写、从 CONIN$ 读都会把调用挂住，连 select 的超时分支
+// 都救不回来。结果是遇到未批准的 app 就整个卡死（实测复现：无响应）。
+//
+// 判据从「能否打开控制台」换成「stdin 是不是终端」之后，行为变得确定：
+// 有人在终端前就问，没有就拒绝 —— 不再有任何会阻塞的调用。
 func consolePrompt(ctx context.Context, msg string) (string, error) {
-	in, err := openConsole("CONIN$")
-	if err != nil {
+	if !stdinIsTerminal() {
 		return "", ErrNoConsole
 	}
-	defer in.Close()
-	out, err := openConsoleOut("CONOUT$")
-	if err != nil {
-		return "", ErrNoConsole
-	}
-	defer out.Close()
+	return promptOn(ctx, os.Stdin, os.Stderr, msg)
+}
 
+// stdinIsTerminal 判断当前 stdin 是否终端。
+//
+// 做成变量便于测试注入：go test 环境下 stdin 是 NUL 字符设备，
+// 会被判为终端，从而测不到「非终端必须拒绝」这条关键行为。
+var stdinIsTerminal = func() bool { return isTerminal(os.Stdin) }
+
+// promptOn 在给定的流上提问并等待回答。
+func promptOn(ctx context.Context, in io.Reader, out io.Writer, msg string) (string, error) {
 	if _, err := fmt.Fprint(out, msg); err != nil {
 		return "", ErrNoConsole
 	}
@@ -169,8 +179,7 @@ func consolePrompt(ctx context.Context, msg string) (string, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		reader := bufio.NewReader(in)
-		line, err := reader.ReadString('\n')
+		line, err := bufio.NewReader(in).ReadString('\n')
 		ch <- result{line: line, err: err}
 	}()
 
@@ -184,4 +193,16 @@ func consolePrompt(ctx context.Context, msg string) (string, error) {
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
+}
+
+// isTerminal 判断文件是否是终端（而非管道或重定向的文件）。
+//
+// MCP server 被客户端拉起时 stdin 是管道，ModeCharDevice 为假，
+// 于是自然不会去问 —— 那上面跑的是 JSON-RPC 协议。
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }

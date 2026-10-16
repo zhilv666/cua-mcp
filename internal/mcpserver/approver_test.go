@@ -3,8 +3,10 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/zhilv666/cua-mcp/internal/engine"
 	"github.com/zhilv666/cua-mcp/internal/sky"
@@ -205,5 +207,65 @@ func TestGrantAndRevoke(t *testing.T) {
 	}
 	if apps := sky.ReadAllowlist(path); sky.ContainsApp(apps, "g.exe") {
 		t.Errorf("Revoke 未生效: %#v", apps)
+	}
+}
+
+// 关键回归：stdin 不是终端时必须立即拒绝，不能去碰控制台设备。
+//
+// 早先的实现尝试打开 CONIN$/CONOUT$ 询问用户 —— 实测在 stdin 被重定向的
+// 场景下（MCP server 被客户端拉起就是这样）这两个设备能打开，但读写都会
+// 把调用挂死，连 select 超时都救不回来。结果是遇到未批准的 app 整个卡死。
+func TestConsolePromptRejectsWhenNotTerminal(t *testing.T) {
+	// 测试环境里 stdin 通常是管道/重定向，不是终端
+	old := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false } // 模拟 MCP 场景：stdin 是管道
+	defer func() { stdinIsTerminal = old }()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := consolePrompt(context.Background(), "? ")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrNoConsole) {
+			t.Errorf("应返回 ErrNoConsole，得到 %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("consolePrompt 卡住了 —— 非终端时必须立即返回")
+	}
+}
+
+// 无终端时 Decide 必须拒绝，且不能挂住。
+func TestDecideFailsClosedQuickly(t *testing.T) {
+	a := NewApprover(filepath.Join(t.TempDir(), "config.toml"), false, nil)
+	old := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	defer func() { stdinIsTerminal = old }()
+
+	done := make(chan engine.Decision, 1)
+	go func() {
+		d, _ := a.Decide(context.Background(), req("blocked.exe"))
+		done <- d
+	}()
+	select {
+	case d := <-done:
+		if d.Allow {
+			t.Error("无终端时不该放行")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Decide 卡住了")
+	}
+}
+
+// isTerminal 对普通文件应返回 false。
+func TestIsTerminalOnRegularFile(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if isTerminal(f) {
+		t.Error("普通文件不该判为终端")
 	}
 }
